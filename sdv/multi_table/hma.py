@@ -11,7 +11,11 @@ from rdt.transformers import FloatFormatter
 from tqdm import tqdm
 
 from sdv._utils import _get_root_tables
-from sdv.errors import SynthesizerInputError
+from sdv.cag.parent_child_sum import (
+    ParentChildSum,
+    enforce_parent_child_sum_constraints,
+)
+from sdv.errors import SamplingError, SynthesizerInputError
 from sdv.multi_table.base import BaseMultiTableSynthesizer
 from sdv.sampling import BaseHierarchicalSampler
 
@@ -734,3 +738,101 @@ class HMASynthesizer(BaseHierarchicalSampler, BaseMultiTableSynthesizer):
                     foreign_key=foreign_key,
                 )
                 child_table[foreign_key] = parent_ids.to_numpy()
+
+    def _get_parent_child_sum_constraints(self):
+        """Return the fitted ``ParentChildSum`` constraints attached to this synthesizer."""
+        return [
+            constraint
+            for constraint in getattr(self, 'constraints', [])
+            if isinstance(constraint, ParentChildSum)
+        ]
+
+    @staticmethod
+    def _validate_max_tries(max_tries):
+        if isinstance(max_tries, bool) or not isinstance(max_tries, int) or max_tries <= 0:
+            raise SynthesizerInputError(
+                f"Invalid parameter for 'max_tries' ({max_tries}). "
+                'Please provide a positive integer.'
+            )
+
+    def _post_process_sampled_data(self, sampled_data):
+        """Enforce the fitted ``ParentChildSum`` constraints on a sampled dataset.
+
+        Called inside a single generation attempt after the tables have been restored
+        to their integer dtypes. Raises ``SamplingError`` if one of the relationships
+        cannot be satisfied for this draw, which triggers a full regeneration of the
+        dataset in ``sample``.
+        """
+        parent_child_constraints = self._get_parent_child_sum_constraints()
+        if not parent_child_constraints:
+            return sampled_data
+
+        enforce_parent_child_sum_constraints(
+            parent_child_constraints,
+            sampled_data,
+            self._original_metadata,
+            max_tries=getattr(self, '_current_max_tries', 100),
+        )
+        return sampled_data
+
+    def sample(self, scale=1.0, max_tries=100):
+        """Generate synthetic data for the entire dataset.
+
+        When one or more ``ParentChildSum`` constraints have been added, every
+        generation attempt is checked against the exact parent/child totals. If the
+        amounts sampled for some parent group cannot be made consistent with the
+        number of sampled child rows and the declared bounds, the whole dataset is
+        regenerated. A half-finished set of tables is never returned.
+
+        Args:
+            scale (float):
+                A float representing how much to scale the data by. If scale is set
+                to ``1.0``, this does not scale the sizes of the tables. If ``scale``
+                is greater than ``1.0`` create more rows than the original data by a
+                factor of ``scale``. If ``scale`` is lower than ``1.0`` create fewer
+                rows by the factor of ``scale`` than the original tables.
+                Defaults to ``1.0``.
+            max_tries (int, optional):
+                Maximum number of full generation attempts allowed while satisfying
+                the fitted ``ParentChildSum`` constraints. Must be a non-boolean
+                positive integer. Defaults to ``100``. Ignored when no
+                ``ParentChildSum`` constraint has been added, in which case
+                ``sample(scale)`` behaves exactly as before.
+
+        Returns:
+            dict[str, pandas.DataFrame]:
+                The sampled tables.
+
+        Raises:
+            SamplingError:
+                If the attempt budget is exhausted or the declared constraints are
+                infeasible for the generated group sizes.
+        """
+        parent_child_constraints = self._get_parent_child_sum_constraints()
+        if not parent_child_constraints:
+            return super().sample(scale=scale)
+
+        self._validate_max_tries(max_tries)
+        last_error = None
+        self._current_max_tries = max_tries
+        try:
+            for attempt in range(max_tries):
+                try:
+                    return super().sample(scale=scale)
+                except SamplingError as error:
+                    last_error = error
+                    LOGGER.info(
+                        'ParentChildSum enforcement failed on attempt %s/%s: %s',
+                        attempt + 1,
+                        max_tries,
+                        error,
+                    )
+        finally:
+            if hasattr(self, '_current_max_tries'):
+                del self._current_max_tries
+
+        raise SamplingError(
+            f'Exhausted the max_tries={max_tries} generation attempt budget while '
+            'enforcing ParentChildSum constraints. The last failure was: '
+            f'{last_error}'
+        )

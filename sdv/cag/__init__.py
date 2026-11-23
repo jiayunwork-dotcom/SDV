@@ -3,6 +3,7 @@
 from sdv.cag.fixed_combinations import FixedCombinations
 from sdv.cag.fixed_increments import FixedIncrements
 from sdv.cag.inequality import Inequality
+from sdv.cag.parent_child_sum import ParentChildSum
 from sdv.cag.range import Range
 from sdv.cag.one_hot_encoding import OneHotEncoding
 from sdv.cag.programmable_constraint import (
@@ -14,6 +15,7 @@ __all__ = (
     'FixedCombinations',
     'FixedIncrements',
     'Inequality',
+    'ParentChildSum',
     'Range',
     'OneHotEncoding',
     'ProgrammableConstraint',

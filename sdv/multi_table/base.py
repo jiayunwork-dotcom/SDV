@@ -667,6 +667,17 @@ class BaseMultiTableSynthesizer:
     def _sample(self, scale):
         raise NotImplementedError()
 
+    def _post_process_sampled_data(self, sampled_data):
+        """Apply synthesizer-specific adjustments to a fully sampled dataset.
+
+        Hook called by ``sample`` after the hierarchical sampling and constraint
+        reverse transforms have finished but before the columns are restored to the
+        original schema. The base implementation is a no-op. Subclasses (for example
+        ``HMASynthesizer``) can override it to enforce constraints that require the
+        complete set of sampled tables.
+        """
+        return sampled_data
+
     def sample(self, scale=1.0):
         """Generate synthetic data for the entire dataset.
 
@@ -691,6 +702,8 @@ class BaseMultiTableSynthesizer:
 
         with self._set_temp_numpy_seed(), disable_single_table_logger():
             sampled_data = self._sample(scale=scale)
+
+        sampled_data = self._post_process_sampled_data(sampled_data)
 
         total_rows = 0
         total_columns = 0
